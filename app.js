@@ -1,8 +1,10 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 
-const clinicsRoutes = require('./routes/clinics'); // ✅ should return a router
+// Import routes
+const clinicsRoutes = require('./routes/clinics');
 const ngosRoutes = require('./routes/ngos');
 const eventsRoutes = require('./routes/events');  
 const ambulancesRoutes = require('./routes/ambulance');
@@ -12,10 +14,11 @@ const govtHelplineRoutes = require('./routes/govtHelpline');
 const medicalInsuranceRoutes = require('./routes/medicalInsurance');
 const abcRoutes = require('./routes/abc');
 const adoptionRoutes = require('./routes/adoptions');
-// const usersRoutes = require('./routes/users');
-// const adminRoutes = require('./routes/adminRoutes');
+const usersRoutes = require('./routes/users');
 
 const app = express();
+
+// Middlewares
 app.use(cors());
 app.use(express.json()); 
 app.use(bodyParser.json());
@@ -31,9 +34,7 @@ app.use('/api/v1/govthelpline', govtHelplineRoutes);
 app.use('/api/v1/medicalinsurance', medicalInsuranceRoutes);
 app.use('/api/v1/abc', abcRoutes);
 app.use('/api/v1/adoptions', adoptionRoutes);
-// app.use('/api/v1/users', usersRoutes);
-// app.use('/api/v1/admin', adminRoutes); 
-// app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/users', usersRoutes);
 
-const PORT = 3000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));

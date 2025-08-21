@@ -2,103 +2,53 @@
 
  // 1️⃣ Get all adoption posts with optional filters + pagination
 exports.getAdoptions = (req, res) => {
-    let { page = 1, limit = 10, species, city, status, gender, vaccinated, dewormed, neutered, age_min, age_max } = req.query;
-
+    let { page = 1, limit = 10, species, city, status, userLat, userLng, radius } = req.query;
     page = Number(page);
     limit = Number(limit);
     const offset = (page - 1) * limit;
 
-    let filterSql = "WHERE 1=1"; // base filter
+    let filterSql = "WHERE 1=1";
     const params = [];
 
-    // Species filter
     if (species) {
         filterSql += " AND species = ?";
         params.push(species);
     }
-
-    // City filter
     if (city) {
         filterSql += " AND city = ?";
         params.push(city);
     }
-
-    // Status filter
     if (status) {
         filterSql += " AND status = ?";
         params.push(status);
     }
 
-    // Gender filter
-    if (gender) {
-        filterSql += " AND gender = ?";
-        params.push(gender);
+    // Add geo-location filter
+    let distanceSelect = "";
+    if (userLat && userLng && radius) {
+        distanceSelect = `,
+        (6371 * acos(
+            cos(radians(?)) * cos(radians(lat)) * cos(radians(lng) - radians(?))
+            + sin(radians(?)) * sin(radians(lat))
+        )) AS distance`;
+        filterSql += " HAVING distance <= ?";
+        params.push(Number(userLat), Number(userLng), Number(userLat), Number(radius));
     }
 
-    // Vaccinated, dewormed, neutered filters (convert string to 0/1)
-    if (vaccinated !== undefined) {
-        filterSql += " AND vaccinated = ?";
-        params.push(vaccinated === 'true' ? 1 : 0);
-    }
-    if (dewormed !== undefined) {
-        filterSql += " AND dewormed = ?";
-        params.push(dewormed === 'true' ? 1 : 0);
-    }
-    if (neutered !== undefined) {
-        filterSql += " AND neutered = ?";
-        params.push(neutered === 'true' ? 1 : 0);
-    }
+    const sql = `
+        SELECT *, lat, lng ${distanceSelect}
+        FROM adoptions
+        ${filterSql}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    `;
 
-    // Age range filter
-    if (age_min !== undefined) {
-        filterSql += " AND age_value >= ?";
-        params.push(Number(age_min));
-    }
-    if (age_max !== undefined) {
-        filterSql += " AND age_value <= ?";
-        params.push(Number(age_max));
-    }
-
-    // Count total records for pagination
-    const countSql = `SELECT COUNT(*) AS total FROM adoptions ${filterSql}`;
-    db.query(countSql, params, (err, countResult) => {
+    db.query(sql, [...params, limit, offset], (err, results) => {
         if (err) return res.status(500).json({ error: "Database error", details: err });
-
-        const totalCount = countResult[0].total;
-
-        // Main query with pagination
-        const sql = `
-            SELECT * FROM adoptions
-            ${filterSql}
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-        `;
-        db.query(sql, [...params, limit, offset], (err, results) => {
-            if (err) return res.status(500).json({ error: "Database error", details: err });
-
-            // Convert photos JSON to array & 0/1 to true/false
-            results.forEach(row => {
-                if (row.photos) {
-                    try {
-                        row.photos = JSON.parse(row.photos);
-                    } catch (e) {
-                        row.photos = [];
-                    }
-                }
-                row.vaccinated = row.vaccinated === 1;
-                row.dewormed = row.dewormed === 1;
-                row.neutered = row.neutered === 1;
-            });
-
-            res.json({
-                page,
-                limit,
-                totalCount,
-                data: results
-            });
-        });
+        res.json({ page, limit, data: results });
     });
-}; 
+};
+
 
 
 // 2️⃣ Get single adoption post by ID
@@ -131,17 +81,19 @@ exports.getAdoptionById = (req, res) => {
 
 // 3️⃣ Create adoption post
 exports.createAdoption = (req, res) => {
-    let {
+  let {
         species, pet_name, gender, age_value, age_unit,
         vaccinated, dewormed, neutered, temperament,
         city, area, lat, lng, photos, video,
-        owner_user_id, status
+        status
     } = req.body;
 
-    if (!species || !owner_user_id) 
-        return res.status(400).json({ error: "species and owner_user_id are required" });
+    // ✅ Use logged-in user id
+    const owner_user_id = req.user.id;
 
-    // Ensure numeric fields are valid
+    if (!species) 
+        return res.status(400).json({ error: "species is required" });
+
     age_value = age_value ? Number(age_value) : null;
     lat = lat ? Number(lat) : null;
     lng = lng ? Number(lng) : null;
@@ -152,14 +104,13 @@ exports.createAdoption = (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
     `;
     const params = [
-        species.trim(), pet_name ? pet_name.trim() : null, gender ? gender.trim() : null,
-        age_value, age_unit ? age_unit.trim() : null,
+        species.trim(), pet_name || null, gender || null,
+        age_value, age_unit || null,
         vaccinated ? 1 : 0, dewormed ? 1 : 0, neutered ? 1 : 0,
-        temperament ? temperament.trim() : null,
-        city ? city.trim() : null, area ? area.trim() : null,
+        temperament || null, city || null, area || null,
         lat, lng,
-        photos ? JSON.stringify(photos) : null, video ? video.trim() : null,
-        owner_user_id, status ? status.trim() : "pending"
+        photos ? JSON.stringify(photos) : null, video || null,
+        owner_user_id, status || "pending"
     ];
 
     db.query(sql, params, (err, result) => {
@@ -174,16 +125,44 @@ exports.createAdoption = (req, res) => {
 // 4️⃣ Update adoption post
 exports.updateAdoption = (req, res) => {
     const id = req.params.id;
-    const { status, photos } = req.body;
-    const photosJson = photos ? JSON.stringify(photos) : null;
+    const updates = req.body; // could contain age_value, city, status, etc.
 
-    const query = `UPDATE adoptions SET status = ?, photos = ?, updated_at = NOW() WHERE id = ?`;
-    db.query(query, [status, photosJson, id], (err, result) => {
+    // ✅ Ensure the logged-in user is the owner
+    const checkSql = "SELECT owner_user_id FROM adoptions WHERE id = ?";
+    db.query(checkSql, [id], (err, results) => {
         if (err) return res.status(500).json({ error: "Database error" });
-        if (result.affectedRows === 0) return res.status(404).json({ error: "Adoption post not found" });
-        res.json({ message: "Adoption post updated successfully" });
+        if (!results.length) return res.status(404).json({ error: "Adoption post not found" });
+
+        if (results[0].owner_user_id !== req.user.id) {
+            return res.status(403).json({ error: "Not authorized to update this post" });
+        }
+
+        // ✅ Dynamically build update query
+        const fields = [];
+        const values = [];
+
+        for (let key in updates) {
+            if (updates[key] !== undefined) {
+                fields.push(`${key} = ?`);
+                values.push(updates[key]);
+            }
+        }
+
+        if (!fields.length) {
+            return res.status(400).json({ error: "No valid fields to update" });
+        }
+
+        values.push(id); // last param is WHERE id = ?
+
+        const query = `UPDATE adoptions SET ${fields.join(", ")}, updated_at = NOW() WHERE id = ?`;
+
+        db.query(query, values, (err2) => {
+            if (err2) return res.status(500).json({ error: "Database error", details: err2 });
+            res.json({ message: "Adoption post updated successfully" });
+        });
     });
 };
+
 
 // 5️⃣ Delete adoption post
 exports.deleteAdoption = (req, res) => {
