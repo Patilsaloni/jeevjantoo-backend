@@ -8,11 +8,18 @@ exports.getClinics = (req, res) => {
     let params = [];
 
     // Only calculate distance if coordinates provided
-    if (userLat && userLng) {
-        sql = "SELECT *, " +
-            "(6371 * acos(cos(radians(?)) * cos(radians(lat)) * cos(radians(lng) - radians(?)) + sin(radians(?)) * sin(radians(lat)))) AS distance";
-        params.push(parseFloat(userLat), parseFloat(userLng), parseFloat(userLat));
-    }
+ if (userLat && userLng) {
+    sql = `SELECT *, 
+        (6371 * acos(
+            cos(radians(?)) * cos(radians(lat)) 
+            * cos(radians(longitude) - radians(?)) 
+            + sin(radians(?)) * sin(radians(lat))
+        )) AS distance`;
+    params.push(parseFloat(userLat), parseFloat(userLng), parseFloat(userLat));
+}
+
+
+
 
     sql += " FROM clinics WHERE status = 'active'";
 

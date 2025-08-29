@@ -1,2 +1,6 @@
-serviceAccountKey.json 
-config/my-firebase-key.json 
+# Firebase / Google credentials
+serviceAccountKey.json
+config/my-firebase-key.json
+
+# Env files
+.env

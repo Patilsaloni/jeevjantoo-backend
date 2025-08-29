@@ -1,4 +1,5 @@
 // server.js
+require('dotenv').config(); 
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -15,6 +16,20 @@ const medicalInsuranceRoutes = require('./routes/medicalInsurance');
 const abcRoutes = require('./routes/abc');
 const adoptionRoutes = require('./routes/adoptions');
 const usersRoutes = require('./routes/users');
+const adminRoutes = require("./routes/adminRoutes");
+const adminAdoptionsRoutes = require("./routes/admin/adoptions");
+const adminClinicsRoutes = require("./routes/admin/clinics");
+const adminNgosRoutes = require("./routes/admin/ngos")
+const adminAmbulanceRoutes = require("./routes/admin/ambulance");
+const adminEventsRoutes = require("./routes/admin/events");
+const adminBoardingSpaRoutes = require("./routes/admin/boardingSpa");
+const adminAbcRoutes = require('./routes/admin/abc');
+const adminGovtHelplineRoutes = require("./routes/admin/govtHelpline");
+const adminFeedingRoutes = require("./routes/admin/feeding");
+const adminMedicalInsuranceRoutes = require('./routes/admin/medicalInsurance');
+const directoryReportRoutes = require("./routes/directoryReportRoutes");
+const adminDirectoryRoutes = require("./routes/admin/directoryRoutes");
+
 
 const app = express();
 
@@ -35,6 +50,19 @@ app.use('/api/v1/medicalinsurance', medicalInsuranceRoutes);
 app.use('/api/v1/abc', abcRoutes);
 app.use('/api/v1/adoptions', adoptionRoutes);
 app.use('/api/v1/users', usersRoutes);
+app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/admin/adoptions", adminAdoptionsRoutes);
+app.use("/api/v1/admin/clinics", adminClinicsRoutes);
+app.use("/api/v1/admin/ngos", adminNgosRoutes)
+app.use("/api/v1/admin/ambulances", adminAmbulanceRoutes);
+app.use("/api/v1/admin/events", adminEventsRoutes);
+app.use("/api/v1/admin/boarding-spa", adminBoardingSpaRoutes);
+app.use("/api/v1/admin/abc", adminAbcRoutes);
+app.use("/api/v1/admin/govthelpline", adminGovtHelplineRoutes);
+app.use("/api/v1/admin/feeding", adminFeedingRoutes);
+app.use("/api/v1/admin/medical-insurance", adminMedicalInsuranceRoutes);
+app.use("/api/v1/directories", directoryReportRoutes);
+app.use("/api/v1/admin/directories", adminDirectoryRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));

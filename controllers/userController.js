@@ -1,83 +1,72 @@
-const db = require('../db');
-require('dotenv').config(); 
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
+const admin = require("../firebase");  // Firebase Admin SDK
+const db = require("../db");           // MySQL connection
+const bcrypt = require("bcrypt");
+const util = require("util");
+const { generateToken } = require("../middleware/auth");
+const query = util.promisify(db.query).bind(db);
 
-// Secret key for JWT (store in .env in production)
-const JWT_SECRET = process.env.JWT_SECRET;
-
-exports.register = async (req, res) => {
-    const { name, email, phone, password } = req.body;
-    if (!name || !password || (!email && !phone)) {
-        return res.status(400).json({ error: "Name, Email/Phone and password required" });
-    }
-
+// ----------------- Registration -----------------
+exports.registerUser = async (req, res) => {
     try {
-        // Password hash karna
+        const { name, phone, email, password } = req.body;
+
+        if (!name || !phone || !password) {
+            return res.status(400).json({ error: "Name, phone, and password are required" });
+        }
+
+        const existingUser = await query("SELECT * FROM users WHERE phone = ?", [phone]);
+        if (existingUser.length > 0) {
+            return res.status(400).json({ error: "Phone number already registered" });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // DB me insert
-        const query = "INSERT INTO users (name, email, phone, password) VALUES (?, ?, ?, ?)";
-        db.query(query, [name, email, phone, hashedPassword], (err, result) => {
-            if (err) return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-            res.json({ message: "User registered successfully", userId: result.insertId });
-        });
+        await query(
+            "INSERT INTO users (name, phone, email, password) VALUES (?, ?, ?, ?)",
+            [name, phone, email || null, hashedPassword]
+        );
+
+        res.json({ message: "User registered successfully" });
     } catch (error) {
-        res.status(500).json({ error: "Server error", details: error.message });
+        console.error("Registration error:", error);
+        res.status(500).json({ error: "Server error" });
     }
 };
 
+// ----------------- Firebase OTP Login -----------------
+exports.loginUser = async (req, res) => {
+    const { idToken } = req.body; // idToken from Firebase signInWithPhoneNumber
 
-// Login route
-exports.login = (req, res) => {
-    const { email, phone, password } = req.body;
+    if (!idToken) return res.status(400).json({ error: "idToken is required" });
 
-    if (!password || (!email && !phone)) {
-        return res.status(400).json({ error: "Email/Phone and password required" });
-    }
+    try {
+        // Verify idToken with Firebase Admin
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const phone = decodedToken.phone_number;
 
-    const query = email 
-        ? "SELECT * FROM users WHERE email = ?" 
-        : "SELECT * FROM users WHERE phone = ?";
+        if (!phone) return res.status(400).json({ error: "Phone missing in token" });
 
-    const param = email ? email : phone;
+        // Check if user exists in DB
+        let users = await query("SELECT * FROM users WHERE phone = ?", [phone]);
+        let user;
+        if (users.length === 0) {
+            const result = await query("INSERT INTO users (phone, role) VALUES (?, ?)", [phone, "user"]);
+            user = { id: result.insertId, phone, role: "user" };
+        } else {
+            user = users[0];
+        }
 
-    db.query(query, [param], async (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        if (!results.length) return res.status(404).json({ error: "User not found" });
-
-        const user = results[0];
-        const match = await bcrypt.compare(password, user.password);
-        if (!match) return res.status(401).json({ error: "Invalid password" });
-
-        const token = jwt.sign(
-            { id: user.id, role: user.role },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
+        // Generate backend JWT
+        const backendToken = generateToken({ id: user.id, role: user.role });
 
         res.json({
             message: "Login successful",
-            token,
-            user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role }
+            token: backendToken,
+            user
         });
-    });
-};
 
-
-// Get all users
-exports.getUsers = (req, res) => {
-    db.query("SELECT * FROM users", (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        res.json({ data: results });
-    });
-};
-
-// Get user by ID
-exports.getUserById = (req, res) => {
-    const { id } = req.params;
-    db.query("SELECT * FROM users WHERE id = ?", [id], (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        res.json({ data: results[0] });
-    });
+    } catch (error) {
+        console.error("Login error:", error.message);
+        res.status(401).json({ error: "Invalid or expired OTP" });
+    }
 };

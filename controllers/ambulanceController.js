@@ -14,7 +14,7 @@ exports.getAmbulances = (req, res) => {
         params.push(parseFloat(userLat), parseFloat(userLng), parseFloat(userLat));
     }
 
-    sql += " FROM ambulance WHERE 1=1";
+    sql += " FROM ambulances WHERE 1=1";
 
     if (q) {
         sql += " AND name LIKE ?";

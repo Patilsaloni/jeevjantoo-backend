@@ -1,318 +1,280 @@
-    const db = require('../db');
+const db = require('../db');
+const { getCoordinatesFromAddress } = require("../utils/googleMaps");
+const util = require("util");
+const query = util.promisify(db.query).bind(db);
 
- // 1️⃣ Get all adoption posts with optional filters + pagination
-exports.getAdoptions = (req, res) => {
-    let { page = 1, limit = 10, species, city, status, userLat, userLng, radius } = req.query;
-    page = Number(page);
-    limit = Number(limit);
-    const offset = (page - 1) * limit;
+const MAX_REPORTS_PER_DAY = 5;
+// ---------------- Get all adoption posts ----------------
+exports.getAdoptions = async (req, res) => {
+    try {
+        let {
+            page = 1, limit = 10, species, city, vaccinated, gender,
+            age_min, age_max, userLat, userLng, radius = 10, status
+        } = req.query;
 
-    let filterSql = "WHERE 1=1";
-    const params = [];
+        page = Number(page);
+        limit = Number(limit);
+        const offset = (page - 1) * limit;
 
-    if (species) {
-        filterSql += " AND species = ?";
-        params.push(species);
+        let params = [];
+        let sql = `SELECT id, pet_name, species, gender, age_value, age_unit, vaccinated, dewormed, neutered, temperament, friendly_with_kids, trained, special_needs, city, area, lat, lng, photos, video, status, owner_user_id`;
+
+        if (userLat && userLng) {
+            sql += `, (6371 * ACOS(COS(RADIANS(?)) * COS(RADIANS(lat)) *
+                    COS(RADIANS(lng) - RADIANS(?)) +
+                    SIN(RADIANS(?)) * SIN(RADIANS(lat)))) AS distance`;
+            params.push(parseFloat(userLat), parseFloat(userLng), parseFloat(userLat));
+        }
+
+        sql += " FROM adoptions WHERE 1=1";
+
+        if (status) params.push(status) && (sql += " AND status = ?");
+        if (species) params.push(species) && (sql += " AND species = ?");
+        if (city) params.push(city) && (sql += " AND city = ?");
+        if (vaccinated !== undefined) params.push(vaccinated ? 1 : 0) && (sql += " AND vaccinated = ?");
+        if (gender) params.push(gender) && (sql += " AND gender = ?");
+        if (age_min) params.push(age_min) && (sql += " AND age_value >= ?");
+        if (age_max) params.push(age_max) && (sql += " AND age_value <= ?");
+
+        if (userLat && userLng) {
+            sql += " HAVING distance <= ? ORDER BY distance ASC";
+            params.push(Number(radius));
+        } else sql += " ORDER BY created_at DESC";
+
+        sql += " LIMIT ? OFFSET ?";
+        params.push(limit, offset);
+
+        const results = await query(sql, params);
+        const formattedResults = results.map(row => {
+            if (row.photos) {
+                try { row.photos = JSON.parse(row.photos); } catch { row.photos = []; }
+            }
+            ["vaccinated","dewormed","neutered","friendly_with_kids","trained","special_needs"].forEach(f => row[f] = row[f] === 1);
+            if (row.temperament) try { row.temperament = JSON.parse(row.temperament); } catch {}
+            return row;
+        });
+
+        // Total count
+        let countSql = "SELECT COUNT(*) as total FROM adoptions WHERE 1=1";
+        let countParams = [];
+        if (status) countSql += " AND status = ?" && countParams.push(status);
+        if (species) countSql += " AND species = ?" && countParams.push(species);
+        if (city) countSql += " AND city = ?" && countParams.push(city);
+        if (vaccinated !== undefined) countSql += " AND vaccinated = ?" && countParams.push(vaccinated ? 1 : 0);
+        if (gender) countSql += " AND gender = ?" && countParams.push(gender);
+        if (age_min) countSql += " AND age_value >= ?" && countParams.push(age_min);
+        if (age_max) countSql += " AND age_value <= ?" && countParams.push(age_max);
+
+        const countResult = await query(countSql, countParams);
+        const total = countResult[0]?.total || 0;
+
+        res.json({ page, limit, total, data: formattedResults });
+    } catch (err) {
+        console.error("Get Adoptions error:", err);
+        res.status(500).json({ error: "Server error" });
     }
-    if (city) {
-        filterSql += " AND city = ?";
-        params.push(city);
-    }
-    if (status) {
-        filterSql += " AND status = ?";
-        params.push(status);
-    }
-
-    // Add geo-location filter
-    let distanceSelect = "";
-    if (userLat && userLng && radius) {
-        distanceSelect = `,
-        (6371 * acos(
-            cos(radians(?)) * cos(radians(lat)) * cos(radians(lng) - radians(?))
-            + sin(radians(?)) * sin(radians(lat))
-        )) AS distance`;
-        filterSql += " HAVING distance <= ?";
-        params.push(Number(userLat), Number(userLng), Number(userLat), Number(radius));
-    }
-
-    const sql = `
-        SELECT *, lat, lng ${distanceSelect}
-        FROM adoptions
-        ${filterSql}
-        ORDER BY created_at DESC
-        LIMIT ? OFFSET ?
-    `;
-
-    db.query(sql, [...params, limit, offset], (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error", details: err });
-        res.json({ page, limit, data: results });
-    });
 };
 
-
-
-// 2️⃣ Get single adoption post by ID
-exports.getAdoptionById = (req, res) => {
-    const id = req.params.id;
-
-    db.query("SELECT * FROM adoptions WHERE id = ?", [id], (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error", details: err });
+// ---------------- Get adoption by ID ----------------
+exports.getAdoptionById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const results = await query("SELECT * FROM adoptions WHERE id = ?", [id]);
         if (!results.length) return res.status(404).json({ error: "Adoption post not found" });
 
         const row = results[0];
-
-        // Convert photos JSON to array
-        if (row.photos) {
-            try {
-                row.photos = JSON.parse(row.photos);
-            } catch (e) {
-                row.photos = [];
-            }
-        }
-
-        // Convert 0/1 to true/false
-        row.vaccinated = row.vaccinated === 1;
-        row.dewormed = row.dewormed === 1;
-        row.neutered = row.neutered === 1;
+        if (row.photos) try { row.photos = JSON.parse(row.photos); } catch { row.photos = []; }
+        ["vaccinated","dewormed","neutered","friendly_with_kids","trained","special_needs"].forEach(f => row[f] = row[f] === 1);
+        if (row.temperament) try { row.temperament = JSON.parse(row.temperament); } catch {}
 
         res.json(row);
-    });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
 };
 
-// 3️⃣ Create adoption post
-exports.createAdoption = (req, res) => {
-  let {
-        species, pet_name, gender, age_value, age_unit,
-        vaccinated, dewormed, neutered, temperament,
-        city, area, lat, lng, photos, video,
-        status
-    } = req.body;
+// ---------------- Create adoption ----------------
+exports.createAdoption = async (req, res) => {
+    try {
+        const {
+            pet_name, species, gender, age_value, age_unit,
+            vaccinated, dewormed, neutered, temperament,
+            friendly_with_kids, trained, special_needs,
+            city, area, address, photos, video, status
+        } = req.body;
 
-    // ✅ Use logged-in user id
-    const owner_user_id = req.user.id;
+        if (!species || !pet_name || !city || !address) return res.status(400).json({ error: "species, pet_name, city, address required" });
 
-    if (!species) 
-        return res.status(400).json({ error: "species is required" });
+        const coordinates = await getCoordinatesFromAddress(address);
+        if (!coordinates) return res.status(400).json({ error: "Invalid address" });
 
-    age_value = age_value ? Number(age_value) : null;
-    lat = lat ? Number(lat) : null;
-    lng = lng ? Number(lng) : null;
+        const lat = coordinates.lat;
+        const lng = coordinates.lng;
+        const owner_user_id = req.user?.id;
 
-    const sql = `
-        INSERT INTO adoptions 
-        (species, pet_name, gender, age_value, age_unit, vaccinated, dewormed, neutered, temperament, city, area, lat, lng, photos, video, owner_user_id, status, is_reviewed, report_count) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-    `;
-    const params = [
-        species.trim(), pet_name || null, gender || null,
-        age_value, age_unit || null,
-        vaccinated ? 1 : 0, dewormed ? 1 : 0, neutered ? 1 : 0,
-        temperament || null, city || null, area || null,
-        lat, lng,
-        photos ? JSON.stringify(photos) : null, video || null,
-        owner_user_id, status || "pending"
-    ];
+        const sql = `INSERT INTO adoptions
+        (species, pet_name, gender, age_value, age_unit, vaccinated, dewormed, neutered, temperament, friendly_with_kids, trained, special_needs, city, area, address, lat, lng, photos, video, owner_user_id, status, is_reviewed, report_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`;
 
-    db.query(sql, params, (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-        res.json({ message: "Adoption post created", id: result.insertId });
-    });
+        const params = [
+            species, pet_name, gender || null, age_value || null, age_unit || null,
+            vaccinated ? 1 : 0, dewormed ? 1 : 0, neutered ? 1 : 0,
+            temperament ? JSON.stringify(temperament) : null,
+            friendly_with_kids ? 1 : 0,
+            trained ? 1 : 0,
+            special_needs ? 1 : 0,
+            city, area || null, address, lat, lng,
+            photos ? JSON.stringify(photos) : null,
+            video || null, owner_user_id, status || "pending"
+        ];
+
+        const result = await query(sql, params);
+        res.status(201).json({ message: "Adoption post created", id: result.insertId, lat, lng });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
 };
 
+// ---------------- Update adoption ----------------
+exports.updateAdoption = async (req, res) => {
+    try {
+        const id = req.params.id;
+        const updates = req.body;
 
+        const [post] = await query("SELECT owner_user_id FROM adoptions WHERE id = ?", [id]);
+        if (!post) return res.status(404).json({ error: "Post not found" });
+        if (post.owner_user_id !== req.user.id) return res.status(403).json({ error: "Unauthorized" });
 
-
-// 4️⃣ Update adoption post
-exports.updateAdoption = (req, res) => {
-    const id = req.params.id;
-    const updates = req.body; // could contain age_value, city, status, etc.
-
-    // ✅ Ensure the logged-in user is the owner
-    const checkSql = "SELECT owner_user_id FROM adoptions WHERE id = ?";
-    db.query(checkSql, [id], (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        if (!results.length) return res.status(404).json({ error: "Adoption post not found" });
-
-        if (results[0].owner_user_id !== req.user.id) {
-            return res.status(403).json({ error: "Not authorized to update this post" });
+        if (updates.address && (!updates.lat || !updates.lng)) {
+            const coords = await getCoordinatesFromAddress(updates.address);
+            if (coords) { updates.lat = coords.lat; updates.lng = coords.lng; }
         }
 
-        // ✅ Dynamically build update query
         const fields = [];
         const values = [];
-
         for (let key in updates) {
             if (updates[key] !== undefined) {
-                fields.push(`${key} = ?`);
-                values.push(updates[key]);
-            }
-        }
-
-        if (!fields.length) {
-            return res.status(400).json({ error: "No valid fields to update" });
-        }
-
-        values.push(id); // last param is WHERE id = ?
-
-        const query = `UPDATE adoptions SET ${fields.join(", ")}, updated_at = NOW() WHERE id = ?`;
-
-        db.query(query, values, (err2) => {
-            if (err2) return res.status(500).json({ error: "Database error", details: err2 });
-            res.json({ message: "Adoption post updated successfully" });
-        });
-    });
-};
-
-
-// 5️⃣ Delete adoption post
-exports.deleteAdoption = (req, res) => {
-    const id = req.params.id;
-
-    // First delete related inquiries (if any)
-    db.query("DELETE FROM inquiries WHERE adoption_id = ?", [id], (err) => {
-        if (err) {
-            console.error("DB Error (inquiries):", err);
-            return res.status(500).json({ error: "Database error deleting inquiries", details: err });
-        }
-
-        // Now delete the adoption post
-        db.query("DELETE FROM adoptions WHERE id = ?", [id], (err, result) => {
-            if (err) {
-                console.error("DB Error (adoptions):", err);
-                return res.status(500).json({ error: "Database error deleting adoption post", details: err });
-            }
-
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ error: "Adoption post not found" });
-            }
-
-            res.json({ message: "Adoption post deleted successfully" });
-        });
-    });
-};
-
-
-
-// 6️⃣ Create inquiry for a post
-exports.createInquiry = (req, res) => {
-    const adoptionId = Number(req.params.id); // ensure numeric
-    const { name, contact, message } = req.body;
-
-    // 1️⃣ Validate required fields
-    if (!adoptionId || !name || !contact || !message) {
-        return res.status(400).json({ error: "All fields are required" });
-    }
-
-    // 2️⃣ Prepare SQL
-    const sql = `
-        INSERT INTO inquiries (adoption_id, name, contact, message) 
-        VALUES (?, ?, ?, ?)
-    `;
-
-    const params = [
-        adoptionId,
-        name.trim(),
-        contact.trim(),
-        message.trim()
-    ];
-
-    // 3️⃣ Execute query
-    db.query(sql, params, (err, result) => {
-        if (err) {
-            return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-        }
-        res.json({ message: "Inquiry created successfully", id: result.insertId });
-    });
-};
-
-
-
-// 7️⃣ Mark post as adopted
-exports.markAdopted = (req, res) => {
-    const postId = Number(req.params.id);
-
-    if (!postId) {
-        return res.status(400).json({ error: "Invalid adoption ID" });
-    }
-
-    const sql = "UPDATE adoptions SET status = 'adopted' WHERE id = ?";
-
-    db.query(sql, [postId], (err, result) => {
-        if (err) {
-            return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-        }
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: "Adoption post not found" });
-        }
-
-        res.json({ message: "Post marked as adopted" });
-    });
-};
-
-
-// 8️⃣ Report a post
-exports.reportAdoption = (req, res) => {
-    const id = Number(req.params.id);
-    const { reason } = req.body;
-
-    if (!id) {
-        return res.status(400).json({ error: "Invalid adoption ID" });
-    }
-
-    // Update report_count in adoptions table
-    const updateSql = "UPDATE adoptions SET report_count = report_count + 1 WHERE id = ?";
-    db.query(updateSql, [id], (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: "Adoption post not found" });
-        }
-        //  Return success message
-        res.json({ message: `Adoption post ${id} reported successfully`, reason: reason || null });
-    });
-};
-
-
-
-
-// 9️⃣ Admin review/approve/reject adoption post ✅
-exports.reviewAdoption = (req, res) => {
-    const id = req.params.id;
-    const { is_reviewed, rejection_reason } = req.body;
-
-    const sql = `UPDATE adoptions SET is_reviewed = ?, rejection_reason = ?, updated_at = NOW() WHERE id = ?`;
-    db.query(sql, [is_reviewed ? 1 : 0, rejection_reason || null, id], (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        if (result.affectedRows === 0) return res.status(404).json({ error: "Adoption post not found" });
-        res.json({ message: "Adoption post reviewed successfully" });
-    });
-};
-
-
-exports.getModerationQueue = (req, res) => {
-    const sql = `SELECT * FROM adoptions WHERE is_reviewed = 0 ORDER BY created_at DESC`;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error", details: err.sqlMessage });
-
-        if (!results.length) return res.status(404).json({ error: "No pending adoption posts found" });
-
-        // Convert photos JSON to array & 0/1 to true/false
-        results.forEach(row => {
-            if (row.photos) {
-                try {
-                    row.photos = JSON.parse(row.photos);
-                } catch {
-                    row.photos = [];
+                if (["friendly_with_kids","trained","special_needs","vaccinated","dewormed","neutered"].includes(key)) {
+                    values.push(updates[key] ? 1 : 0);
+                } else if (key === "temperament" && updates[key]) {
+                    values.push(JSON.stringify(updates[key]));
+                } else {
+                    values.push(updates[key]);
                 }
+                fields.push(`${key}=?`);
             }
-            row.vaccinated = row.vaccinated === 1;
-            row.dewormed = row.dewormed === 1;
-            row.neutered = row.neutered === 1;
-        });
+        }
+        if (!fields.length) return res.status(400).json({ error: "No valid fields to update" });
 
-        res.json({ totalCount: results.length, data: results });
-    });
+        values.push(id);
+        await query(`UPDATE adoptions SET ${fields.join(',')}, updated_at=NOW() WHERE id=?`, values);
+        res.json({ message: "Adoption post updated" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
 };
 
+// ---------------- Delete adoption ----------------
+exports.deleteAdoption = async (req, res) => {
+    try {
+        const id = req.params.id;
+        await query("DELETE FROM inquiries WHERE adoption_id=?", [id]);
+        const result = await query("DELETE FROM adoptions WHERE id=?", [id]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Post not found" });
+        res.json({ message: "Adoption post deleted" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
 
+// ---------------- Create inquiry ----------------
+exports.createInquiry = async (req, res) => {
+    try {
+        const adoptionId = Number(req.params.id);
+        const { name, contact, message } = req.body;
+        if (!adoptionId || !name?.trim() || !contact?.trim() || !message?.trim()) return res.status(400).json({ error: "All fields are required" });
+
+        const adoptionExists = await query("SELECT id FROM adoptions WHERE id = ?", [adoptionId]);
+        if (!adoptionExists.length) return res.status(404).json({ error: "Adoption post not found" });
+
+        const sql = "INSERT INTO inquiries (adoption_id, name, contact, message) VALUES (?, ?, ?, ?)";
+        const result = await query(sql, [adoptionId, name.trim(), contact.trim(), message.trim()]);
+        res.status(201).json({ message: "Inquiry sent successfully", id: result.insertId });
+    } catch (err) {
+        console.error("Create Inquiry Error:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
+
+// ---------------- Get inquiries ----------------
+exports.getInquiries = async (req, res) => {
+    try {
+        const adoptionId = req.params.id;
+        const userId = req.user.id;
+
+        const adoption = await query("SELECT owner_user_id FROM adoptions WHERE id = ?", [adoptionId]);
+        if (!adoption.length) return res.status(404).json({ error: "Adoption post not found" });
+
+        const ownerId = adoption[0].owner_user_id;
+        if (userId !== ownerId && !req.user.isAdmin) return res.status(403).json({ error: "Not authorized to view inquiries" });
+
+        const results = await query("SELECT id, name, contact, message, created_at FROM inquiries WHERE adoption_id = ?", [adoptionId]);
+        res.json({ adoptionId, total: results.length, inquiries: results });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
+
+// ---------------- Mark as adopted ----------------
+exports.markAdopted = async (req, res) => {
+    try {
+        const id = req.params.id;
+        await query("UPDATE adoptions SET status='adopted' WHERE id=?", [id]);
+        res.json({ message: "Marked as adopted" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
+
+// ---------------- Report adoption ----------------
+exports.reportAdoption = async (req, res) => {
+    try {
+        const { id } = req.params;        // adoption post id
+        const { comment } = req.body;
+        const userId = req.user?.id || 0;
+
+        // Fetch adoption post
+        const [post] = await query("SELECT id, status FROM adoptions WHERE id = ?", [id]);
+
+        // Allow reporting only if post is active or approved
+        if (!post || (post.status !== "active" && post.status !== "approved")) {
+            return res.status(400).json({ 
+                error: "Report can only be created for posts that are active or approved." 
+            });
+        }
+
+        // Insert report into adoption_reports
+        const sql = `INSERT INTO adoption_reports 
+                     (post_id, reported_by_user_id, comment) 
+                     VALUES (?, ?, ?)`;
+        const result = await query(sql, [id, userId, comment || null]);
+
+        // Increment report_count in adoption post table
+        await query("UPDATE adoptions SET report_count = report_count + 1 WHERE id = ?", [id]);
+
+        res.status(201).json({
+            success: true,
+            message: "Adoption listing reported",
+            report_id: result.insertId
+        });
+    } catch (err) {
+        console.error("Error reporting adoption:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
