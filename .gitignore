@@ -4,3 +4,5 @@ config/my-firebase-key.json
 
 # Env files
 .env
+"config/my-firebase-key.json" 
+"serviceAccountKey.json" 
